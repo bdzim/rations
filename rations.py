@@ -1,4 +1,5 @@
-from scipy.optimize import minimize
+import random
+from scipy.optimize import minimize, basinhopping
 import skopt
 
 
@@ -113,7 +114,7 @@ ingredients = [
         (dig_threonine, 1.053),
         (dig_tryptophan, .398),
         (dig_valine, 1.434),
-        (energy_me_broiler, 2064),
+        (energy_me_broiler, 3064),
         (fat, 19.5),
     ]),
     Ingredient(
@@ -125,7 +126,7 @@ ingredients = [
         maximum=1,
     ),
     Ingredient('Mononcalcium Phosphate', 67, [
-        (calcium, .18),
+        (calcium, 18),
         (dig_phosphorus_poultry, 19.29),
     ]),
     Ingredient('Broiler Start 75831', 160, [
@@ -223,8 +224,8 @@ def add_nutrient_cost_both(nutrient_amounts, debug):
     extra_cost = 0
     for nutrient, nutrient_amount in nutrient_amounts.values():
         add_to_cost = 0
-        increase = 5
-        percentage_tune = 4
+        increase = 10
+        percentage_tune = 6
         if nutrient_amount < nutrient.minimum:
             diff = nutrient.minimum - nutrient_amount
             percentage_diff = (diff / nutrient.minimum) * 100
@@ -274,8 +275,7 @@ def print_fun(x, f, accepted):
     print("at minima %.4f accepted %d" % (f, int(accepted)))
 
 
-def bfgs():
-    initial = [2.81, 4.45, 52.5, 0, 27.66, 6.875, 0, 3.5, 2.1149, .0084, .07, .0046]
+def bfgs(initial):
     dollar_cost = find_cost(initial, base_cost=True)
     print('Initial cost per KG ${:.2f}'.format(dollar_cost))
     lowest_cost = 100
@@ -298,13 +298,36 @@ def bfgs():
         print('{}: {:.5f}%'.format(ingredient, (max(best_ration[y], 0) / total_amount) * 100))
 
 
-def forest():
-    res = skopt.forest_minimize(find_cost, )
+def forest(initial):
+    bounds = []
+    for ingredient in ingredients:
+        bounds.append((ingredient.minimum, ingredient.maximum))
+        res = skopt.forest_minimize(find_cost, bounds)
+        return res
+
+
+def basin_hopping(initial):
+    ret = basinhopping(find_cost, initial, niter=100, T=.5)
+    cost = find_cost(ret.x)
+    best_ration = ret.x
+    print('Cost:', cost)
+
+    print(find_cost(best_ration, debug=True), '\n')
+    dollar_cost = find_cost(ret.x, base_cost=True)
+    print('Cost per KG ${:.2f}'.format(dollar_cost))
+    total_amount = sum(x for x in best_ration if x > 0)
+    for y, ingredient in enumerate(ingredients):
+        print('{}: {:.5f}%'.format(ingredient, (max(best_ration[y], 0) / total_amount) * 100))
 
 
 def find_rations():
-    bfgs()
-    # forest()
+    initial = [2.81, 4.45, 52.5, 0, 27.66, 6.875, 0, 3.5, 2.1149, .0084, .07, .0046]
+    # initial = [1, 2, 3, 4, 5, 10, 15, 21, 31, 41, 51, 61]
+    # initial = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    random.shuffle(initial)
+    # bfgs(initial)
+    # forest(initial)
+    basin_hopping(initial)
 
 
 if __name__ == '__main__':
