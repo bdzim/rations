@@ -1,5 +1,6 @@
 import sys
 import json
+from functools import partial
 from scipy.optimize import basinhopping
 
 
@@ -25,12 +26,10 @@ class Ingredient(object):
         return self.name
 
 
-def add_nutrient_cost_both(nutrient_amounts, modifiers, debug):
+def add_nutrient_cost(nutrient_amounts, increase, percentage_tune):
     extra_cost = 0
     for nutrient, nutrient_amount in nutrient_amounts.values():
         add_to_cost = 0
-        increase = modifiers['increase']
-        percentage_tune = modifiers['percentage_tune']
 
         if nutrient_amount < nutrient.minimum:
             diff = nutrient.minimum - nutrient_amount
@@ -46,53 +45,14 @@ def add_nutrient_cost_both(nutrient_amounts, modifiers, debug):
             add_to_cost += (percentage_diff / percentage_tune) ** 2
         if add_to_cost:
             extra_cost += add_to_cost
-            if debug:
-                print('{}: {} < {:.5f} < {}: diff: {:.3f} {:.2f}%'.format(
-                    nutrient, nutrient.minimum, nutrient_amount, nutrient.maximum, diff,
-                    percentage_diff
-                ))
     return extra_cost
 
 
-def find_cost(ingredient_amounts, base_cost=False,
-              modifiers={'increase': 10, 'percentage_tune': 6}, debug=False):
-    amounts_and_cost = get_nutrient_amounts(ingredient_amounts)
-    nutrient_amounts = amounts_and_cost[0]
-    cost = amounts_and_cost[1]
+def find_cost(ingredient_amounts, base_cost=False, increase=20, percentage_tune=6):
+    nutrient_amounts, cost, total_amount = get_nutrient_amounts(ingredient_amounts)
 
     if not base_cost:
-        cost += add_nutrient_cost_both(nutrient_amounts, modifiers, debug)
-        # cost += add_nutrient_cost_flat(nutrient_amounts)
-
-    return cost
-
-
-def add_nutrient_cost(nutrient_amounts):
-    extra_cost = 0
-
-    for nutrient, nutrient_amount in nutrient_amounts.values():
-        add_to_cost = 0
-
-        if round(nutrient_amount, 2) < round(nutrient.minimum):
-
-            diff = nutrient.minimum - nutrient_amount
-
-            add_to_cost += diff * 11
-
-        if add_to_cost:
-            extra_cost += add_to_cost
-
-    return extra_cost
-
-
-def find_cost2(ingredient_amounts, base_cost=False):
-    amounts_and_cost = get_nutrient_amounts(ingredient_amounts)
-    nutrient_amounts = amounts_and_cost[0]
-    cost = amounts_and_cost[1]
-
-    if not base_cost:
-        cost += add_nutrient_cost(nutrient_amounts)
-
+        cost += add_nutrient_cost(nutrient_amounts, increase, percentage_tune)
     return cost
 
 
@@ -112,40 +72,25 @@ def get_nutrient_amounts(ingredient_amounts):
         for nutrient in ingredient.provides:
             nutrient_amounts[nutrient[0]][1] += nutrient[1] * percent
 
-    return [nutrient_amounts, cost, total_amount]
-
-
-def accept_test(**kwargs):
-    if kwargs['f_new'] < kwargs['f_old']:
-        info = get_nutrient_amounts(kwargs['x_new'])
-
-        if info[3]:
-            return True
-    else:
-        old = get_nutrient_amounts(kwargs['x_old'])
-        new = get_nutrient_amounts(kwargs['x_new'])
-
-        if not old[3] and new[3]:
-            return True
-
-    return False
-
-    # x_new = kwargs.pop('x_new')
-    # print('{}: {}'.format(x_new, all(x >= 0 for x in x_new)))
-    # return all(x >= 0 for x in x_new)
-
-
-def print_fun(x, f, accepted):
-    print("at minima %.4f accepted %d" % (f, int(accepted)))
+    return nutrient_amounts, cost, total_amount
 
 
 # https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html
 def basin_hopping(initial):
-    ret = basinhopping(find_cost, initial, niter=150, stepsize=1.5, interval=10)
+    # Use loose constraints to allow the algorithm to get close
+    ret = basinhopping(partial(find_cost, increase=50, percentage_tune=8),
+                       initial, niter=100, stepsize=1.5, interval=10)
     best_ration = ret.x
-    info = get_nutrient_amounts(best_ration)
-    print_results(best_ration, info)
-    result_amounts = ["{:4f}".format((max(x, 0) / info[2]) * 100) for x in best_ration]
+    nutrient_amounts, cost, total_amount = get_nutrient_amounts(best_ration)
+    print_results(best_ration, nutrient_amounts, cost, total_amount)
+
+    # Tighten up the constraints to get closer to the minimums
+    ret = basinhopping(partial(find_cost, increase=10, percentage_tune=2.4),
+                       best_ration, niter=50)
+    best_ration = ret.x
+    nutrient_amounts, cost, total_amount = get_nutrient_amounts(best_ration)
+    print_results(best_ration, nutrient_amounts, cost, total_amount)
+    result_amounts = ["{:4f}".format((max(x, 0) / total_amount) * 100) for x in best_ration]
     print(result_amounts)
 
     # J1
@@ -169,23 +114,19 @@ def basin_hopping(initial):
         print('------')
 
 
-def print_results(best_ration, info):
-    info = get_nutrient_amounts(best_ration)
-
-    # dollar_cost = find_cost(ret.x, base_cost=True)
+def print_results(best_ration, nutrient_amounts, cost, total_amount):
+    dollar_cost = find_cost(best_ration, base_cost=True)
     if not send_to_ruby:
-        print('Cost per KG ${:.2f}, at percent: {:.2f}'.format(info[1], info[2]))
+        print('Cost per KG ${:.2f}, at percent: {:.2f}'.format(dollar_cost, total_amount))
 
     for y, ingredient in enumerate(ingredients):
         if not send_to_ruby:
-            print('{}: {:.5f}%'.format(ingredient, (max(best_ration[y], 0) / info[2]) * 100))
+            print('{}: {:.5f}%'.format(ingredient, (max(best_ration[y], 0) / total_amount) * 100))
 
-    amounts = info[0]
+    for nut_name, values in nutrient_amounts.items():
+        diff = round(values[0].minimum - values[1], 3)
 
-    for nut_name, values in amounts.items():
-        diff = round(values[0].minimum - values[1], 2)
-
-        if diff > 0.005:
+        if diff > 0.001:
             if not send_to_ruby:
                 print('{} was under the minimum by {:.3f}'.format(nut_name, diff))
         elif values[0].maximum < values[1]:
